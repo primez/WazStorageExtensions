@@ -1,20 +1,18 @@
-﻿using Microsoft.WindowsAzure.StorageClient;
-using Microsoft.WindowsAzure.StorageClient.Protocol;
-using System;
-using System.IO;
-using System.Threading;
+﻿using System;
 using System.Net;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Blob;
 
 namespace smarx.WazStorageExtensions
 {
     public static class LeaseBlobExtensions
     {
-        public static string TryAcquireLease(this CloudBlob blob)
+        public static string TryAcquireLease(this CloudBlockBlob blob)
         {
             try { return blob.AcquireLease(); }
             catch (WebException e)
             {
-                if ((e.Response == null) || ((HttpWebResponse)e.Response).StatusCode != HttpStatusCode.Conflict) // 409, already leased
+                if (e.Response == null || ((HttpWebResponse)e.Response).StatusCode != HttpStatusCode.Conflict) // 409, already leased
                 {
                     throw;
                 }
@@ -23,28 +21,35 @@ namespace smarx.WazStorageExtensions
             }
         }
 
-        public static string AcquireLease(this CloudBlob blob)
+        public static string AcquireLease(this CloudBlockBlob blob)
         {
-            var creds = blob.ServiceClient.Credentials;
-            var transformedUri = new Uri(creds.TransformUri(blob.Uri.AbsoluteUri));
-            var req = BlobRequest.Lease(transformedUri,
-                90, // timeout (in seconds)
-                LeaseAction.Acquire, // as opposed to "break" "release" or "renew"
-                null); // name of the existing lease, if any
-            blob.ServiceClient.Credentials.SignRequest(req);
-            using (var response = req.GetResponse())
-            {
-                return response.Headers["x-ms-lease-id"];
-            }
+            return blob.AcquireLeaseAsync(TimeSpan.FromSeconds(90)).Result;
         }
 
         private static void DoLeaseOperation(CloudBlob blob, string leaseId, LeaseAction action)
         {
-            var creds = blob.ServiceClient.Credentials;
-            var transformedUri = new Uri(creds.TransformUri(blob.Uri.AbsoluteUri));
-            var req = BlobRequest.Lease(transformedUri, 90, action, leaseId);
-            creds.SignRequest(req);
-            req.GetResponse().Close();
+            switch (action)
+            {
+                case LeaseAction.Acquire:
+                    blob.AcquireLeaseAsync(TimeSpan.FromSeconds(90), leaseId).Wait();
+                    break;
+                case LeaseAction.Renew:
+                    blob.RenewLeaseAsync(AccessCondition.GenerateLeaseCondition(leaseId)).Wait();
+                    break;
+                case LeaseAction.Release:
+                    blob.ReleaseLeaseAsync(AccessCondition.GenerateLeaseCondition(leaseId)).Wait();
+                    break;
+                case LeaseAction.Break:
+                    blob.BreakLeaseAsync(TimeSpan.FromSeconds(90)).Wait();
+                    break;
+                case LeaseAction.Change:
+                    blob.ChangeLeaseAsync(leaseId, AccessCondition.GenerateLeaseCondition(leaseId)).Wait();
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(action), action, null);
+            }
+
+            
         }
 
         public static void ReleaseLease(this CloudBlob blob, string leaseId)
@@ -54,8 +59,15 @@ namespace smarx.WazStorageExtensions
 
         public static bool TryRenewLease(this CloudBlob blob, string leaseId)
         {
-            try { blob.RenewLease(leaseId); return true; }
-            catch { return false; }
+            try
+            {
+                blob.RenewLease(leaseId);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static void RenewLease(this CloudBlob blob, string leaseId)
@@ -68,36 +80,9 @@ namespace smarx.WazStorageExtensions
             DoLeaseOperation(blob, null, LeaseAction.Break);
         }
 
-        // NOTE: This method doesn't do everything that the regular UploadText does.
-        // Notably, it doesn't update the BlobProperties of the blob (with the new
-        // ETag and LastModifiedTimeUtc). It also, like all the methods in this file,
-        // doesn't apply any retry logic. Use this at your own risk!
-        public static void UploadText(this CloudBlob blob, string text, string leaseId)
+        public static void SetMetadata(this CloudBlockBlob blob, string leaseId)
         {
-            string url = blob.Uri.AbsoluteUri;
-            if (blob.ServiceClient.Credentials.NeedsTransformUri)
-            {
-                url = blob.ServiceClient.Credentials.TransformUri(url);
-            }
-            var req = BlobRequest.Put(new Uri(blob.ServiceClient.Credentials.TransformUri(blob.Uri.AbsoluteUri)),
-                90, new BlobProperties(), BlobType.BlockBlob, leaseId, 0);
-            using (var writer = new StreamWriter(req.GetRequestStream()))
-            {
-                writer.Write(text);
-            }
-            blob.ServiceClient.Credentials.SignRequest(req);
-            req.GetResponse().Close();
-        }
-
-        public static void SetMetadata(this CloudBlob blob, string leaseId)
-        {
-            var req = BlobRequest.SetMetadata(new Uri(blob.ServiceClient.Credentials.TransformUri(blob.Uri.AbsoluteUri)), 90, leaseId);
-            foreach (string key in blob.Metadata.Keys)
-            {
-                req.Headers.Add("x-ms-meta-" + key, blob.Metadata[key]);
-            }
-            blob.ServiceClient.Credentials.SignRequest(req);
-            req.GetResponse().Close();
+            blob.SetMetadata(AccessCondition.GenerateLeaseCondition(leaseId));
         }
     }
 }

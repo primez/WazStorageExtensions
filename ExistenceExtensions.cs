@@ -1,30 +1,26 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Microsoft.WindowsAzure.StorageClient;
+﻿using System.Net;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Blob;
 
 namespace smarx.WazStorageExtensions
 {
     public static class ExistenceExtensions
     {
-        public static bool Exists(this CloudBlob blob)
+        public static bool Exists(this CloudBlockBlob blob)
         {
             try
             {
                 blob.FetchAttributes();
                 return true;
             }
-            catch (StorageClientException e)
+            catch (StorageException e)
             {
-                if (e.ErrorCode == StorageErrorCode.ResourceNotFound)
+                if (e.RequestInformation.HttpStatusCode == (int)HttpStatusCode.NotFound)
                 {
                     return false;
                 }
-                else
-                {
-                    throw;
-                }
+
+                throw;
             }
         }
         public static bool Exists(this CloudBlobContainer container)
@@ -34,16 +30,14 @@ namespace smarx.WazStorageExtensions
                 container.FetchAttributes();
                 return true;
             }
-            catch (StorageClientException e)
+            catch (StorageException e)
             {
-                if (e.ErrorCode == StorageErrorCode.ResourceNotFound)
+                if (e.RequestInformation.HttpStatusCode == (int)HttpStatusCode.NotFound)
                 {
                     return false;
                 }
-                else
-                {
-                    throw;
-                }
+
+                throw;
             }
         }
     }
